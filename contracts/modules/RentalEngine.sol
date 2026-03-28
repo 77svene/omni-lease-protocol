@@ -3,86 +3,99 @@ pragma solidity ^0.8.24;
 
 import "../core/OmniAccessControl.sol";
 
-/**
- * @title RentalEngine
- * @dev Calculates dynamic pricing for NFT rentals based on utilization and demand curves.
- */
+interface IVaultStorage {
+    function lockAsset(uint256 tokenId, address owner) external;
+    function unlockAsset(uint256 tokenId, address owner) external;
+    function isLocked(uint256 tokenId) external view returns (bool);
+}
+
+interface IShadowFactory {
+    function mintShadow(address collection, address to, uint256 tokenId, uint256 expiry) external returns (address);
+    function burnShadow(address collection, uint256 tokenId) external;
+}
+
+interface IPricingOracle {
+    function getLeasePrice(address collection, uint256 duration) external view returns (uint256);
+}
+
+interface IFeeDistributor {
+    function distribute(address collection, uint256 amount, address lister) external;
+}
+
+interface IERC20 {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
 contract RentalEngine is OmniAccessControl {
-    struct PricingConfig {
-        uint256 basePrice;      // Price at 0% utilization (wei per second)
-        uint256 slope;          // Price increase per utilization point
-        uint256 maxPrice;       // Hard cap on price
+    struct Lease {
+        address lessee;
+        address collection;
+        uint256 tokenId;
+        uint256 expiry;
+        bool active;
     }
 
-    // collection => config
-    mapping(address => PricingConfig) public collectionConfigs;
-    // collection => activeLeases
-    mapping(address => uint256) public activeLeases;
-    // collection => totalInventory
-    mapping(address => uint256) public totalInventory;
+    IERC20 public immutable paymentToken;
+    IPricingOracle public oracle;
+    IFeeDistributor public feeDistributor;
+    IShadowFactory public shadowFactory;
+    mapping(address => IVaultStorage) public vaults;
+    
+    // collection => tokenId => Lease
+    mapping(address => mapping(uint256 => Lease)) public activeLeases;
 
-    event ConfigUpdated(address indexed collection, uint256 basePrice, uint256 slope, uint256 maxPrice);
-    event InventoryUpdated(address indexed collection, uint256 totalInventory);
+    event Leased(address indexed collection, uint256 indexed tokenId, address indexed lessee, uint256 expiry);
+    event Returned(address indexed collection, uint256 indexed tokenId);
 
-    /**
-     * @dev Sets the pricing parameters for a specific NFT collection.
-     */
-    function setPricingConfig(
-        address _collection,
-        uint256 _basePrice,
-        uint256 _slope,
-        uint256 _maxPrice
-    ) external onlyRole(OPERATOR_ROLE) {
-        require(_collection != address(0), "RentalEngine: zero address");
-        collectionConfigs[_collection] = PricingConfig({
-            basePrice: _basePrice,
-            slope: _slope,
-            maxPrice: _maxPrice
+    constructor(address _paymentToken, address _oracle, address _feeDistributor, address _shadowFactory) {
+        paymentToken = IERC20(_paymentToken);
+        oracle = IPricingOracle(_oracle);
+        feeDistributor = IFeeDistributor(_feeDistributor);
+        shadowFactory = IShadowFactory(_shadowFactory);
+    }
+
+    function setVault(address collection, address vault) external onlyRole(OPERATOR_ROLE) {
+        vaults[collection] = IVaultStorage(vault);
+    }
+
+    function lease(address collection, uint256 tokenId, uint256 duration, address lister) external {
+        require(duration > 0 && duration <= 30 days, "Engine: invalid duration");
+        require(!activeLeases[collection][tokenId].active, "Engine: already leased");
+        
+        uint256 price = oracle.getLeasePrice(collection, duration);
+        require(paymentToken.transferFrom(msg.sender, address(this), price), "Engine: payment failed");
+
+        // Lock in vault
+        vaults[collection].lockAsset(tokenId, lister);
+
+        // Mint Shadow
+        uint256 expiry = block.timestamp + duration;
+        shadowFactory.mintShadow(collection, msg.sender, tokenId, expiry);
+
+        activeLeases[collection][tokenId] = Lease({
+            lessee: msg.sender,
+            collection: collection,
+            tokenId: tokenId,
+            expiry: expiry,
+            active: true
         });
-        emit ConfigUpdated(_collection, _basePrice, _slope, _maxPrice);
+
+        // Distribute fees
+        paymentToken.approve(address(feeDistributor), price);
+        feeDistributor.distribute(collection, price, lister);
+
+        emit Leased(collection, tokenId, msg.sender, expiry);
     }
 
-    /**
-     * @dev Updates inventory count for a collection. Called by Vaults on deposit/withdraw.
-     */
-    function updateInventory(address _collection, uint256 _total) external onlyRole(OPERATOR_ROLE) {
-        totalInventory[_collection] = _total;
-        emit InventoryUpdated(_collection, _total);
-    }
+    function terminateLease(address collection, uint256 tokenId, address lister) external {
+        Lease storage l = activeLeases[collection][tokenId];
+        require(l.active, "Engine: not active");
+        require(block.timestamp >= l.expiry, "Engine: not expired");
 
-    /**
-     * @dev Tracks active lease count.
-     */
-    function updateActiveLeases(address _collection, bool _increment) external onlyRole(OPERATOR_ROLE) {
-        if (_increment) {
-            activeLeases[_collection]++;
-        } else {
-            require(activeLeases[_collection] > 0, "RentalEngine: underflow");
-            activeLeases[_collection]--;
-        }
-    }
+        l.active = false;
+        shadowFactory.burnShadow(collection, tokenId);
+        vaults[collection].unlockAsset(tokenId, lister);
 
-    /**
-     * @dev Calculates the current price per second for a collection.
-     * Formula: Price = Base + (Slope * (Active / Total))
-     */
-    function getPricePerSecond(address _collection) public view returns (uint256) {
-        PricingConfig memory config = collectionConfigs[_collection];
-        uint256 total = totalInventory[_collection];
-        
-        if (total == 0 || config.basePrice == 0) return config.basePrice;
-        
-        uint256 utilization = (activeLeases[_collection] * 1e18) / total;
-        uint256 variablePrice = (config.slope * utilization) / 1e18;
-        uint256 totalPrice = config.basePrice + variablePrice;
-        
-        return totalPrice > config.maxPrice ? config.maxPrice : totalPrice;
-    }
-
-    /**
-     * @dev Estimates total cost for a duration.
-     */
-    function calculateRentalCost(address _collection, uint256 _duration) external view returns (uint256) {
-        return getPricePerSecond(_collection) * _duration;
+        emit Returned(collection, tokenId);
     }
 }
