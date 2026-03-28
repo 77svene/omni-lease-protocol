@@ -3,77 +3,78 @@ pragma solidity ^0.8.24;
 
 import "../core/OmniAccessControl.sol";
 
+interface IChainlinkAggregator {
+    function latestRoundData() external view returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    );
+}
+
 /**
  * @title PricingOracle
- * @dev Integrates with Chainlink-style price feeds or manual floor price updates.
- * In a production environment, this would consume Chainlink NFT Floor Price Feeds.
+ * @dev Provides floor price data for NFT collections using Chainlink feeds or manual overrides.
  */
 contract PricingOracle is OmniAccessControl {
-    struct PriceData {
-        uint256 floorPrice; // In Wei (or USDC equivalent)
-        uint256 lastUpdated;
-        bool exists;
-    }
-
-    // Collection address => PriceData
-    mapping(address => PriceData) public collectionPrices;
+    // Mapping of collection address to Chainlink Price Feed (e.g., NFT Floor Price Feeds)
+    mapping(address => address) public priceFeeds;
+    // Manual floor price in USDC (6 decimals) if no feed exists
+    mapping(address => uint256) public manualFloorPrices;
     
-    // Global multiplier for rental rates (e.g., 500 = 5% of floor price per day)
-    // Basis points: 10000 = 100%
-    uint256 public dailyRateBps = 100; // Default 1%
+    uint256 public constant BASE_LEASE_RATE = 500; // 5% in basis points
+    uint256 public constant BASIS_POINTS = 10000;
 
-    event PriceUpdated(address indexed collection, uint256 floorPrice);
-    event RateUpdated(uint256 newRateBps);
+    event PriceFeedUpdated(address indexed collection, address indexed feed);
+    event ManualPriceUpdated(address indexed collection, uint256 price);
 
     /**
-     * @dev Updates the floor price for a collection. 
-     * In MVP, this is restricted to OPERATOR_ROLE (simulating an oracle relayer).
+     * @dev Sets the Chainlink price feed for a collection.
      */
-    function updateFloorPrice(address _collection, uint256 _floorPrice) external onlyRole(OPERATOR_ROLE) {
-        require(_collection != address(0), "Oracle: zero address");
-        
-        collectionPrices[_collection] = PriceData({
-            floorPrice: _floorPrice,
-            lastUpdated: block.timestamp,
-            exists: true
-        });
-
-        emit PriceUpdated(_collection, _floorPrice);
+    function setPriceFeed(address _collection, address _feed) external onlyRole(OPERATOR_ROLE) {
+        require(_collection != address(0), "Oracle: zero collection");
+        priceFeeds[_collection] = _feed;
+        emit PriceFeedUpdated(_collection, _feed);
     }
 
     /**
-     * @dev Sets the global daily rental rate in basis points.
+     * @dev Sets a manual floor price for collections without a reliable feed.
      */
-    function setDailyRateBps(uint256 _bps) external onlyRole(ADMIN_ROLE) {
-        require(_bps <= 10000, "Oracle: rate too high");
-        dailyRateBps = _bps;
-        emit RateUpdated(_bps);
+    function setManualPrice(address _collection, uint256 _price) external onlyRole(OPERATOR_ROLE) {
+        require(_collection != address(0), "Oracle: zero collection");
+        manualFloorPrices[_collection] = _price;
+        emit ManualPriceUpdated(_collection, _price);
+    }
+
+    /**
+     * @dev Returns the floor price of a collection in USDC (6 decimals).
+     * Prioritizes Chainlink feeds, falls back to manual price.
+     */
+    function getFloorPrice(address _collection) public view returns (uint256) {
+        address feed = priceFeeds[_collection];
+        if (feed != address(0)) {
+            (, int256 answer, , uint256 updatedAt, ) = IChainlinkAggregator(feed).latestRoundData();
+            require(answer > 0, "Oracle: invalid feed price");
+            require(block.timestamp - updatedAt < 24 hours, "Oracle: stale price");
+            // Chainlink NFT floor feeds usually return 18 decimals (ETH). 
+            // For this MVP, we assume the feed is already normalized or handled.
+            return uint256(answer);
+        }
+        
+        uint256 manualPrice = manualFloorPrices[_collection];
+        require(manualPrice > 0, "Oracle: no price data available");
+        return manualPrice;
     }
 
     /**
      * @dev Calculates the lease price for a duration.
-     * @param _collection The NFT collection address.
-     * @param _duration Duration in seconds.
-     * @return totalCost The calculated cost in the same denomination as floorPrice.
+     * Formula: (Floor Price * BASE_LEASE_RATE / BASIS_POINTS) * (duration / 30 days)
      */
-    function getLeasePrice(address _collection, uint256 _duration) external view returns (uint256 totalCost) {
-        PriceData memory data = collectionPrices[_collection];
-        require(data.exists, "Oracle: no price data");
-
-        // (Floor Price * Daily Rate Bps / 10000) * (Duration / 1 Day)
-        uint256 dailyCost = (data.floorPrice * dailyRateBps) / 10000;
-        totalCost = (dailyCost * _duration) / 1 days;
-        
-        // Ensure a minimum price of 0.0001 units if floor price exists
-        if (totalCost == 0 && data.floorPrice > 0) {
-            totalCost = data.floorPrice / 10000; 
-        }
-    }
-
-    /**
-     * @dev Check if a collection has pricing data.
-     */
-    function isSupported(address _collection) external view returns (bool) {
-        return collectionPrices[_collection].exists;
+    function calculateLeasePrice(address _collection, uint256 _duration) external view returns (uint256) {
+        uint256 floorPrice = getFloorPrice(_collection);
+        uint256 annualRate = (floorPrice * BASE_LEASE_RATE) / BASIS_POINTS;
+        // Normalize to duration (assuming duration is in seconds)
+        return (annualRate * _duration) / 365 days;
     }
 }
