@@ -1,77 +1,76 @@
 const { ethers } = require("ethers");
 
 /**
- * OmniLease Manager
- * Handles pricing logic and on-chain state indexing.
+ * LeaseManager: Handles the business logic for querying active leases
+ * from the LeaseRegistry and ShadowFactory contracts.
  */
 class LeaseManager {
-    constructor() {
-        // Fallback to public RPC for MVP; in production use environment variables
-        this.provider = new ethers.JsonRpcProvider(process.env.RPC_URL || "https://eth-mainnet.g.alchemy.com/v2/demo");
+    constructor(rpcUrl, registryAddress, factoryAddress) {
+        this.provider = new ethers.JsonRpcProvider(rpcUrl);
+        this.registryAddress = registryAddress;
+        this.factoryAddress = factoryAddress;
         
-        // Base rates for the MVP (in USDC units, assuming 6 decimals)
-        this.BASE_RATE_PER_DAY = 5000000n; // $5.00
-        this.SCARCITY_MULTIPLIER = 120n;   // 1.2x
+        // Minimal ABI for the Registry and Factory
+        this.registryAbi = [
+            "function getLease(uint256 tokenId) external view returns (address lessee, uint64 expiry, bool active)",
+            "function isLeaseValid(uint256 tokenId) external view returns (bool)"
+        ];
+        this.factoryAbi = [
+            "function getOriginalAsset(uint256 shadowId) external view returns (address collection, uint256 originalId)"
+        ];
+
+        this.registry = new ethers.Contract(registryAddress, this.registryAbi, this.provider);
+        this.factory = new ethers.Contract(factoryAddress, this.factoryAbi, this.provider);
     }
 
     /**
-     * Calculate a lease quote based on duration and asset tier.
-     * @param {string} collection - NFT contract address
-     * @param {number} durationDays - Number of days to lease
-     * @returns {Object} Quote details
+     * Resolves a Shadow NFT ID to its original asset details and lease status.
+     * @param {string} shadowId - The ID of the Shadow NFT.
+     * @returns {Promise<Object>} Asset and lease details.
      */
-    async getQuote(collection, durationDays) {
-        if (durationDays <= 0) throw new Error("Duration must be positive");
-        
-        // Mock scarcity check: if address ends in '0', it's "rare"
-        const isRare = collection.toLowerCase().endsWith("0");
-        const multiplier = isRare ? this.SCARCITY_MULTIPLIER : 100n;
-        
-        const totalPrice = (this.BASE_RATE_PER_DAY * BigInt(durationDays) * multiplier) / 100n;
-        
-        return {
-            collection,
-            durationDays,
-            quoteId: ethers.hexlify(ethers.randomBytes(16)),
-            priceUSDC: totalPrice.toString(),
-            expiry: Math.floor(Date.now() / 1000) + (durationDays * 86400),
-            isRare
-        };
-    }
-
-    /**
-     * Check the status of a lease on-chain.
-     * @param {string} registryAddress - The LeaseRegistry contract address
-     * @param {string} tokenId - The NFT ID
-     */
-    async getLeaseStatus(registryAddress, tokenId) {
+    async getLeaseStatus(shadowId) {
         try {
-            // Minimal ABI for the LeaseRegistry
-            const abi = [
-                "function getLeaseInfo(uint256 tokenId) external view returns (address owner, address renter, uint64 expiry, bool active)"
-            ];
-            const contract = new ethers.Contract(registryAddress, abi, this.provider);
+            // 1. Map Shadow ID back to Original Asset
+            const [collection, originalId] = await this.factory.getOriginalAsset(shadowId);
             
-            const [owner, renter, expiry, active] = await contract.getLeaseInfo(tokenId);
-            
+            if (collection === ethers.ZeroAddress) {
+                throw new Error("Shadow NFT not found or unlinked");
+            }
+
+            // 2. Check Lease Status in Registry
+            const [lessee, expiry, active] = await this.registry.getLease(originalId);
+            const isValid = await this.registry.isLeaseValid(originalId);
+
             return {
-                tokenId,
-                owner,
-                renter,
+                shadowId,
+                originalCollection: collection,
+                originalId: originalId.toString(),
+                lessee,
                 expiry: Number(expiry),
                 active,
-                isExpired: Number(expiry) < Math.floor(Date.now() / 1000)
+                isValid,
+                timestamp: Math.floor(Date.now() / 1000)
             };
         } catch (error) {
-            console.error("Indexing Error:", error);
-            // Return mock data if provider fails to ensure API doesn't crash during demo
-            return {
-                tokenId,
-                error: "Contract call failed",
-                mockStatus: "Available"
-            };
+            console.error(`LeaseManager Error [${shadowId}]:`, error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Fetches the original NFT metadata URI to proxy it.
+     * @param {string} collection - Original NFT contract address.
+     * @param {string} tokenId - Original Token ID.
+     */
+    async getOriginalMetadata(collection, tokenId) {
+        const erc721Abi = ["function tokenURI(uint256 tokenId) external view returns (string)"];
+        const contract = new ethers.Contract(collection, erc721Abi, this.provider);
+        try {
+            return await contract.tokenURI(tokenId);
+        } catch (e) {
+            return null;
         }
     }
 }
 
-module.exports = new LeaseManager();
+module.exports = LeaseManager;
