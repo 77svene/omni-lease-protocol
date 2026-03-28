@@ -1,0 +1,25 @@
+{
+  "localhost": {
+    "url": "http://127.0.0.1:8545",
+    "chainId": 31337,
+    "accounts": "remote"
+  },
+  "sepolia": {
+    "url": "https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+    "chainId": 11155111,
+    "usdc": "0x1c7D4B196Cb0232b30447a5902e8d20343649F1f",
+    "verify": "https://api-sepolia.etherscan.io/api"
+  },
+  "mainnet": {
+    "url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+    "chainId": 1,
+    "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "verify": "https://api.etherscan.io/api"
+  },
+  "base": {
+    "url": "https://mainnet.base.org",
+    "chainId": 8453,
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "verify": "https://api.basescan.org/api"
+  }
+}
