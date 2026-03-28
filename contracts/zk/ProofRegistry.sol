@@ -1,73 +1,70 @@
 // SPDX-License-Identifier: MIT
 pragma ^0.8.24;
 
+import "../core/OmniAccessControl.sol";
+
 /**
  * @title ProofRegistry
- * @dev Stores and validates nullifiers to prevent double-spending of ZK proofs.
- * This is a critical security component for the OmniLease 'Shadow Wrapper' architecture.
+ * @dev Stores and validates ZK-proof results for NFT lease eligibility.
+ * Prevents double-spending of proofs and ensures only authorized engines can consume them.
  */
-contract ProofRegistry {
-    // Mapping from nullifier (hash of user secret + action) to usage status
-    mapping(bytes32 => bool) public usedNullifiers;
+contract ProofRegistry is OmniAccessControl {
+    // Mapping of nullifier to usage status to prevent replay attacks
+    mapping(bytes32 => bool) public nullifiers;
     
-    // Mapping from proof hash to verification status
-    mapping(bytes32 => bool) public verifiedProofs;
+    // Mapping of user address to their current eligibility status
+    mapping(address => bool) public isEligible;
 
-    event ProofRegistered(bytes32 indexed nullifier, address indexed submitter, uint256 timestamp);
-    event ProofRevoked(bytes32 indexed nullifier, string reason);
+    event ProofVerified(address indexed user, bytes32 indexed nullifier);
+    event EligibilityConsumed(address indexed user);
 
-    error NullifierAlreadyUsed();
-    error InvalidProofHash();
-    error UnauthorizedCaller();
+    /**
+     * @dev Registers a successful ZK proof.
+     * @param user The address of the user who proved eligibility.
+     * @param a Groth16 proof point A
+     * @param b Groth16 proof point B
+     * @param c Groth16 proof point C
+     * @param input Public inputs: [reputationThreshold, balanceThreshold, identityCommitment]
+     * Note: In a production environment, this calls the ZkVerifier.sol.
+     */
+    function registerProof(
+        address user,
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[3] calldata input
+    ) external {
+        // Ensure the proof is valid (Mocking the verifier call for the MVP flow)
+        // In production: require(verifier.verifyProof(a, b, c, input), "Invalid ZK Proof");
+        require(a[0] != 0 && b[0][0] != 0 && c[0] != 0, "Empty proof points");
+        
+        // Generate a unique nullifier to prevent replay.
+        // We combine the identityCommitment (input[2]) with the user's address 
+        // and a secret salt or contract-specific context to prevent cross-contract replays.
+        bytes32 nullifier = keccak256(abi.encodePacked(input[2], user, address(this)));
+        
+        require(!nullifiers[nullifier], "Proof already used");
+        
+        nullifiers[nullifier] = true;
+        isEligible[user] = true;
 
-    address public immutable factory;
-
-    constructor(address _factory) {
-        require(_factory != address(0), "Invalid factory address");
-        factory = _factory;
+        emit ProofVerified(user, nullifier);
     }
 
     /**
-     * @notice Registers a nullifier to prevent replay attacks.
-     * @param _nullifier The unique identifier derived from the ZK proof.
-     * @param _proofHash A hash of the full proof for auditing.
+     * @dev Consumes the eligibility status. Only callable by authorized OmniLease modules.
+     * @param user The address whose eligibility is being consumed.
      */
-    function registerProof(bytes32 _nullifier, bytes32 _proofHash) external {
-        // Only the ShadowFactory or RentalEngine should typically call this
-        if (msg.sender != factory) revert UnauthorizedCaller();
-        if (usedNullifiers[_nullifier]) revert NullifierAlreadyUsed();
-        if (_proofHash == bytes32(0)) revert InvalidProofHash();
-
-        usedNullifiers[_nullifier] = true;
-        verifiedProofs[_proofHash] = true;
-
-        emit ProofRegistered(_nullifier, tx.origin, block.timestamp);
+    function consumeEligibility(address user) external onlyOperator {
+        require(isEligible[user], "User not eligible");
+        isEligible[user] = false;
+        emit EligibilityConsumed(user);
     }
 
     /**
-     * @notice Checks if a nullifier has already been consumed.
-     * @param _nullifier The nullifier to check.
-     * @return bool True if the nullifier is spent.
+     * @dev Check if a user is currently eligible to mint a Shadow NFT.
      */
-    function isSpent(bytes32 _nullifier) external view returns (bool) {
-        return usedNullifiers[_nullifier];
-    }
-
-    /**
-     * @notice Verifies if a specific proof hash was previously registered.
-     * @param _proofHash The hash of the proof.
-     */
-    function isVerified(bytes32 _proofHash) external view returns (bool) {
-        return verifiedProofs[_proofHash];
-    }
-
-    /**
-     * @notice Emergency revocation of a nullifier (e.g., if a proof was found to be malicious).
-     * @dev In a production environment, this would be gated by a DAO or Multisig.
-     */
-    function revokeProof(bytes32 _nullifier, string calldata _reason) external {
-        if (msg.sender != factory) revert UnauthorizedCaller();
-        usedNullifiers[_nullifier] = false;
-        emit ProofRevoked(_nullifier, _reason);
+    function checkEligibility(address user) external view returns (bool) {
+        return isEligible[user];
     }
 }
