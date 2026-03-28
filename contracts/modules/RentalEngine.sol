@@ -2,16 +2,11 @@
 pragma solidity ^0.8.24;
 
 import "../core/OmniAccessControl.sol";
+import "../core/LeaseRegistry.sol";
 
-interface IVaultStorage {
-    function lockAsset(uint256 tokenId, address owner) external;
-    function unlockAsset(uint256 tokenId, address owner) external;
-    function isLocked(uint256 tokenId) external view returns (bool);
-}
-
-interface IShadowFactory {
-    function mintShadow(address collection, address to, uint256 tokenId, uint256 expiry) external returns (address);
-    function burnShadow(address collection, uint256 tokenId) external;
+interface IERC20 {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
 }
 
 interface IPricingOracle {
@@ -19,83 +14,77 @@ interface IPricingOracle {
 }
 
 interface IFeeDistributor {
-    function distribute(address collection, uint256 amount, address lister) external;
+    function distribute(address collection, uint256 amount) external;
 }
 
-interface IERC20 {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+interface IVault {
+    function createLease(uint256 tokenId, address lessee, uint256 duration) external;
+    function ownerOf(uint256 tokenId) external view returns (address);
 }
 
+/**
+ * @title RentalEngine
+ * @dev Orchestrates the rental process: payment, pricing, and lease creation.
+ */
 contract RentalEngine is OmniAccessControl {
-    struct Lease {
-        address lessee;
-        address collection;
-        uint256 tokenId;
-        uint256 expiry;
-        bool active;
-    }
-
-    IERC20 public immutable paymentToken;
+    LeaseRegistry public immutable registry;
     IPricingOracle public oracle;
     IFeeDistributor public feeDistributor;
-    IShadowFactory public shadowFactory;
-    mapping(address => IVaultStorage) public vaults;
-    
-    // collection => tokenId => Lease
-    mapping(address => mapping(uint256 => Lease)) public activeLeases;
+    IERC20 public immutable paymentToken;
 
-    event Leased(address indexed collection, uint256 indexed tokenId, address indexed lessee, uint256 expiry);
-    event Returned(address indexed collection, uint256 indexed tokenId);
+    event Leased(address indexed collection, uint256 indexed tokenId, address indexed lessee, uint256 duration, uint256 price);
 
-    constructor(address _paymentToken, address _oracle, address _feeDistributor, address _shadowFactory) {
-        paymentToken = IERC20(_paymentToken);
+    constructor(address _registry, address _oracle, address _feeDistributor, address _paymentToken) {
+        registry = LeaseRegistry(_registry);
         oracle = IPricingOracle(_oracle);
         feeDistributor = IFeeDistributor(_feeDistributor);
-        shadowFactory = IShadowFactory(_shadowFactory);
+        paymentToken = IERC20(_paymentToken);
     }
 
-    function setVault(address collection, address vault) external onlyRole(OPERATOR_ROLE) {
-        vaults[collection] = IVaultStorage(vault);
+    /**
+     * @dev Updates the oracle address.
+     */
+    function setOracle(address _oracle) external onlyRole(ADMIN_ROLE) {
+        require(_oracle != address(0), "RentalEngine: zero address");
+        oracle = IPricingOracle(_oracle);
     }
 
-    function lease(address collection, uint256 tokenId, uint256 duration, address lister) external {
-        require(duration > 0 && duration <= 30 days, "Engine: invalid duration");
-        require(!activeLeases[collection][tokenId].active, "Engine: already leased");
+    /**
+     * @dev Updates the fee distributor address.
+     */
+    function setFeeDistributor(address _distributor) external onlyRole(ADMIN_ROLE) {
+        require(_distributor != address(0), "RentalEngine: zero address");
+        feeDistributor = IFeeDistributor(_distributor);
+    }
+
+    /**
+     * @dev Executes a lease. 
+     * 1. Calculates price via Oracle.
+     * 2. Collects payment in USDC.
+     * 3. Triggers Vault to mint Shadow NFT.
+     * 4. Distributes fees.
+     */
+    function lease(address collection, uint256 tokenId, uint256 duration) external {
+        address vaultAddr = registry.collectionToVault(collection);
+        require(vaultAddr != address(0), "RentalEngine: collection not registered");
         
         uint256 price = oracle.getLeasePrice(collection, duration);
-        require(paymentToken.transferFrom(msg.sender, address(this), price), "Engine: payment failed");
+        require(price > 0, "RentalEngine: invalid price");
 
-        // Lock in vault
-        vaults[collection].lockAsset(tokenId, lister);
+        // Collect payment
+        require(paymentToken.transferFrom(msg.sender, address(this), price), "RentalEngine: payment failed");
 
-        // Mint Shadow
-        uint256 expiry = block.timestamp + duration;
-        shadowFactory.mintShadow(collection, msg.sender, tokenId, expiry);
-
-        activeLeases[collection][tokenId] = Lease({
-            lessee: msg.sender,
-            collection: collection,
-            tokenId: tokenId,
-            expiry: expiry,
-            active: true
-        });
-
-        // Distribute fees
+        // Approve FeeDistributor to take the funds
         paymentToken.approve(address(feeDistributor), price);
-        feeDistributor.distribute(collection, price, lister);
+        feeDistributor.distribute(collection, price);
 
-        emit Leased(collection, tokenId, msg.sender, expiry);
+        // Trigger Vault to create lease (mint Shadow NFT)
+        IVault(vaultAddr).createLease(tokenId, msg.sender, duration);
+
+        emit Leased(collection, tokenId, msg.sender, duration, price);
     }
+}
 
-    function terminateLease(address collection, uint256 tokenId, address lister) external {
-        Lease storage l = activeLeases[collection][tokenId];
-        require(l.active, "Engine: not active");
-        require(block.timestamp >= l.expiry, "Engine: not expired");
-
-        l.active = false;
-        shadowFactory.burnShadow(collection, tokenId);
-        vaults[collection].unlockAsset(tokenId, lister);
-
-        emit Returned(collection, tokenId);
-    }
+interface IERC20_Approve {
+    function approve(address spender, uint256 amount) external returns (bool);
 }
