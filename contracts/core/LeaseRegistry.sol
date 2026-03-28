@@ -48,25 +48,16 @@ contract LeaseRegistry is OmniAccessControl {
         emit VaultRegistered(_vault, _collection);
     }
 
-    /**
-     * @dev Toggles the active status of a vault.
-     */
-    function setVaultStatus(address _vault, bool _status) external onlyRole(ADMIN_ROLE) {
+    function setVaultStatus(address _vault, bool _isActive) external onlyRole(OPERATOR_ROLE) {
         require(vaults[_vault].vault != address(0), "Registry: vault not found");
-        vaults[_vault].isActive = _status;
-        emit VaultStatusUpdated(_vault, _status);
+        vaults[_vault].isActive = _isActive;
+        emit VaultStatusUpdated(_vault, _isActive);
     }
 
-    /**
-     * @dev Returns the total number of registered vaults.
-     */
     function getVaultCount() external view returns (uint256) {
         return allVaults.length;
     }
 
-    /**
-     * @dev Checks if a vault is valid and active.
-     */
     function isVaultActive(address _vault) external view returns (bool) {
         return vaults[_vault].isActive;
     }
