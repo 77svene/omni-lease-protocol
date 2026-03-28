@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OmniLease | NFT Utility Protocol</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js" type="application/javascript"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="logo">OmniLease</div>
+        <div class="nav-links">
+            <button id="connectBtn" class="btn-primary">Connect Wallet</button>
+            <span id="userAddress" class="address-display"></span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <aside class="sidebar">
+            <ul>
+                <li class="active" onclick="switchTab('marketplace')">Marketplace</li>
+                <li onclick="switchTab('my-leases')">My Leases</li>
+                <li onclick="switchTab('vault')">Lister Vault</li>
+            </ul>
+        </aside>
+
+        <main class="content">
+            <!-- Marketplace Section -->
+            <section id="marketplace" class="tab-content active">
+                <header class="section-header">
+                    <h1>Utility Marketplace</h1>
+                    <p>Rent utility rights without collateral. Shadow NFTs mint instantly.</p>
+                </header>
+                <div id="nft-grid" class="grid">
+                    <!-- Dynamic Content -->
+                    <div class="loader">Loading assets...</div>
+                </div>
+            </section>
+
+            <!-- My Leases Section -->
+            <section id="my-leases" class="tab-content">
+                <header class="section-header">
+                    <h1>Active Leases</h1>
+                    <p>Manage your active utility rights and shadow wrappers.</p>
+                </header>
+                <div id="lease-list" class="list-container">
+                    <p class="empty-state">No active leases found.</p>
+                </div>
+            </section>
+
+            <!-- Lister Vault Section -->
+            <section id="vault" class="tab-content">
+                <header class="section-header">
+                    <h1>Your Vault</h1>
+                    <p>Deposit NFTs to earn USDC yield from utility rentals.</p>
+                </header>
+                <div class="vault-actions">
+                    <input type="text" id="nftAddress" placeholder="NFT Contract Address">
+                    <input type="number" id="tokenId" placeholder="Token ID">
+                    <button onclick="depositNFT()" class="btn-secondary">Deposit to Vault</button>
+                </div>
+                <div id="vault-inventory" class="grid">
+                    <!-- User's deposited NFTs -->
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Rental Modal -->
+    <div id="rentalModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2 id="modalTitle">Rent Utility</h2>
+            <div id="modalBody">
+                <p>Duration: <span id="leaseDuration">24 Hours</span></p>
+                <p>Price: <span id="leasePrice">10 USDC</span></p>
+                <button id="confirmLeaseBtn" class="btn-primary full-width">Confirm & Mint Shadow NFT</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
