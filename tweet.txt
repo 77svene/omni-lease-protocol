@@ -1,0 +1,7 @@
+Just shipped OmniLease — The Composable NFT Utility & Rental Protocol for ETHGlobal HackMoney 2026 | Uniswap & Circle Tracks!
+
+A cross-chain, collateral-free NFT rental engine using 'Shadow Wrappers' and ZK-proofs to enable utility without asset transfer, targeting the $10B gaming and digital real estate m
+
+https://github.com/77svene/omni-lease-protocol
+
+#hackathon #AI #Web3 #DeFi @lablabai
